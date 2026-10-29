@@ -25,7 +25,7 @@
 
 _addon.name = 'SortieEarringCleanup'
 _addon.author = 'Inventory Gremlin'
-_addon.version = '1.2.1'
+_addon.version = '1.2.2'
 _addon.commands = {'sec', 'sortieearrings'}
 
 local extdata = require('extdata')
@@ -133,13 +133,27 @@ local function classify_id(id)
 end
 
 -- Only the 22 Sortie JSE job families (NQ/+1/+2) qualify.
--- FFXI's abbreviated inventory name for +1/+2 is "??? Ear.: JOB +1/+2".
--- Windower items.enl holds the long /item name; en holds the short name.
--- Old Cases and other ??? objects are never matched.
+-- FFXI abbreviates the inventory display of +1/+2 as "??? Ear.: JOB +1/+2".
+-- Prefer the full English resource name for the /item command when available.
 local function is_sortie_unidentified_name(name)
     if type(name) ~= 'string' then return false end
+    local job, suffix = name:match('^%?%?%?%s+Earring:%s+([A-Z]+)(.*)$')
+    if not job then
+        job, suffix = name:match('^%?%?%?%s+Ear%.:%s+([A-Z]+)(.*)$')
+    end
+    return job ~= nil and sortie_jobs[job] == true
+        and (suffix == '' or suffix == ' +1' or suffix == ' +2')
+end
 
-    local job, suffix = name:match('^%?%?%?%s+Earring:%s+([A-Z]+)(.*)
+local function unidentified_earring_name(id)
+    local entry = res.items[id]
+    if not entry then return nil end
+    local long_name = entry.enl or entry.english_log
+    if is_sortie_unidentified_name(long_name) then return long_name end
+    local short_name = entry.en or entry.english
+    if is_sortie_unidentified_name(short_name) then return short_name end
+    return nil
+end
 
 local function scan_unidentified()
     local items = windower.ffxi.get_items(0)
@@ -1833,7 +1847,7 @@ windower.register_event('addon command', function(...)
 end)
 
 windower.register_event('load', function()
-    chat(207, 'Loaded v1.2.0. Use //sec scan, //sec run, or //sec identify.')
+    chat(207, 'Loaded v1.2.2. Use //sec scan, //sec run, or //sec identify.')
 end)
 )
     end
