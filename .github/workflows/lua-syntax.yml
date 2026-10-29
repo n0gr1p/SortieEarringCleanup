@@ -14,3 +14,5 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - name: Parse addon
         run: luac5.1 -p SortieEarringCleanup.lua
+      - name: Run Sortie earring identification regression
+        run: lua5.1 tests/identify_scan.lua
