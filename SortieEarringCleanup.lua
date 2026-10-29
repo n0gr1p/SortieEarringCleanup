@@ -9,6 +9,8 @@
 --   //sec run    - keep best copy in Wardrobes, stage weaker copies in Inventory
 --   //sec abort  - stop the current move queue
 --   //sec status - show queue status
+--   //sec identify scan - list unidentified Sortie earrings in main Inventory
+--   //sec identify      - use all unidentified Sortie earrings, one by one
 --
 -- Safety:
 --   * Never drops/deletes anything.
@@ -18,16 +20,19 @@
 --   * Ties prefer a copy already in a Wardrobe.
 --   * Preflight occurs before any movement.
 --   * Every move is verified before proceeding.
+--   * Identify only uses known Sortie ??? Earrings in main Inventory.
+--   * Identification checks each consumption before proceeding; no cases are opened.
 
 _addon.name = 'SortieEarringCleanup'
 _addon.author = 'Inventory Gremlin'
-_addon.version = '1.1.0'
+_addon.version = '1.2.0'
 _addon.commands = {'sec', 'sortieearrings'}
 
 local extdata = require('extdata')
 local res = require('resources')
 
 local MOVE_DELAY = 2.0
+local IDENTIFY_DELAY = 5.0
 
 local wardrobe_ids = {
     [8] = true,   -- Mog Wardrobe
@@ -72,6 +77,19 @@ local sortie_bases = {
     [25546] = 'RUN', -- Erilaz
 }
 
+local sortie_jobs = {}
+for _, job in pairs(sortie_bases) do
+    sortie_jobs[job] = true
+end
+
+local identify_state = {
+    running = false,
+    generation = 0,
+    processed = 0,
+    initial_total = 0,
+    pending = nil,
+}
+
 local state = {
     running = false,
     queue = {},
@@ -112,6 +130,53 @@ local function classify_id(id)
         end
     end
     return nil
+end
+
+-- Only names in the 22 Sortie JSE job families (including +1/+2) qualify.
+-- Old Cases themselves and unrelated ??? items never match.
+local function unidentified_earring_name(id)
+    local entry = res.items[id]
+    local name = entry and (entry.en or entry.english)
+    if type(name) ~= 'string' then return nil end
+
+    local job, suffix = name:match('^%?%?%?%s+[Ee]arring:%s+([A-Z]+)(.*)$')
+    if not job or not sortie_jobs[job] then return nil end
+    if suffix ~= '' and suffix ~= ' +1' and suffix ~= ' +2' then return nil end
+    return name
+end
+
+local function scan_unidentified()
+    local items = windower.ffxi.get_items(0)
+    if not items then return nil end
+
+    local scan = {total = 0, locked = 0, first = nil, names = {}}
+    for slot, item in ipairs(items) do
+        if item and item.id and item.id > 0 and item.id ~= 0xFFFF then
+            local name = unidentified_earring_name(item.id)
+            if name and (item.count or 0) > 0 then
+                scan.total = scan.total + item.count
+                scan.names[name] = (scan.names[name] or 0) + item.count
+                if (item.status or 0) ~= 0 then
+                    scan.locked = scan.locked + item.count
+                elseif not scan.first then
+                    scan.first = {id = item.id, name = name, slot = slot}
+                end
+            end
+        end
+    end
+    return scan
+end
+
+local function count_unidentified_id(id)
+    local items = windower.ffxi.get_items(0)
+    if not items then return nil end
+    local count = 0
+    for _, item in ipairs(items) do
+        if item and item.id == id then
+            count = count + (item.count or 0)
+        end
+    end
+    return count
 end
 
 local function decode_augments(item)
@@ -621,6 +686,10 @@ advance = function()
 end
 
 local function begin_run()
+    if identify_state.running then
+        chat(167, 'Identification is already running. Use //sec abort first.')
+        return
+    end
     if state.running then
         chat(167, 'A cleanup is already running. Use //sec status or //sec abort.')
         return
@@ -701,6 +770,150 @@ local function scan_only()
     end
 end
 
+-- Identification is intentionally independent of the cleanup movement queue.
+local function identify_stop(reason)
+    identify_state.running = false
+    identify_state.pending = nil
+    identify_state.generation = identify_state.generation + 1
+    chat(167, 'IDENTIFY STOP: '..reason)
+end
+
+local identify_advance
+
+local function identify_schedule(delay)
+    local generation = identify_state.generation
+    (function()
+        if identify_state.running and identify_state.generation == generation then
+            identify_advance()
+        end
+    end):schedule(delay)
+end
+
+identify_advance = function()
+    if not identify_state.running then return end
+
+    -- Verify the previous /item actually consumed exactly one of the requested ID.
+    local pending = identify_state.pending
+    if pending then
+        local current_count = count_unidentified_id(pending.id)
+        if current_count == nil then
+            identify_stop('Inventory could not be read after using '..pending.name..'.')
+            return
+        end
+        if current_count ~= pending.before - 1 then
+            identify_stop(('No verified one-item consumption for %s (before=%d, now=%d).')
+                :format(pending.name, pending.before, current_count))
+            return
+        end
+        identify_state.processed = identify_state.processed + 1
+        chat(207, ('IDENTIFIED %d/%d: %s')
+            :format(identify_state.processed, identify_state.initial_total, pending.name))
+        identify_state.pending = nil
+    end
+
+    local scan = scan_unidentified()
+    if not scan then
+        identify_stop('Main Inventory is unavailable.')
+        return
+    end
+
+    if scan.total == 0 then
+        identify_state.running = false
+        identify_state.generation = identify_state.generation + 1
+        chat(207, ('IDENTIFY COMPLETE: %d Sortie earring(s) appraised. No unidentified earrings remain in main Inventory.')
+            :format(identify_state.processed))
+        return
+    end
+
+    if scan.locked > 0 then
+        identify_stop(('%d unidentified earring(s) are not in a usable state.'):format(scan.locked))
+        return
+    end
+
+    local player = windower.ffxi.get_player()
+    if not player or player.status ~= 0 then
+        identify_stop('Character must be idle to use items.')
+        return
+    end
+
+    if inventory_free() < 1 then
+        identify_stop('Keep at least one free main Inventory slot for appraisal results.')
+        return
+    end
+
+    local next_item = scan.first
+    if not next_item then
+        identify_stop('No usable unidentified earring was found.')
+        return
+    end
+
+    local before = count_unidentified_id(next_item.id)
+    if not before or before < 1 then
+        identify_stop('Selected earring disappeared before use.')
+        return
+    end
+
+    identify_state.pending = {id = next_item.id, name = next_item.name, before = before}
+    chat(207, ('IDENTIFY USING %s (remaining=%d)'):format(next_item.name, scan.total))
+    windower.send_command('input /item "'..next_item.name..'" <me>')
+    identify_schedule(IDENTIFY_DELAY)
+end
+
+local function identify_scan_only()
+    local scan = scan_unidentified()
+    if not scan then
+        chat(167, 'Main Inventory is unavailable.')
+        return
+    end
+    chat(207, ('IDENTIFY SCAN: %d unopened Sortie earring(s) in main Inventory (%d locked).')
+        :format(scan.total, scan.locked))
+    local names = {}
+    for name in pairs(scan.names) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        chat(8, ('  %s x%d'):format(name, scan.names[name]))
+    end
+end
+
+local function begin_identify()
+    if identify_state.running or state.running then
+        chat(167, 'An earring operation is already running. Use //sec status or //sec abort.')
+        return
+    end
+
+    local scan = scan_unidentified()
+    if not scan then
+        chat(167, 'Main Inventory is unavailable.')
+        return
+    end
+    if scan.total == 0 then
+        chat(207, 'No unidentified Sortie earrings in main Inventory.')
+        return
+    end
+    if scan.locked > 0 then
+        chat(167, ('Cannot start: %d unidentified earring(s) locked.'):format(scan.locked))
+        return
+    end
+    local player = windower.ffxi.get_player()
+    if not player or player.status ~= 0 then
+        chat(167, 'Character must be idle to identify earrings.')
+        return
+    end
+    if inventory_free() < 1 then
+        chat(167, 'Free at least one main Inventory slot before identifying earrings.')
+        return
+    end
+
+    identify_state.running = true
+    identify_state.generation = identify_state.generation + 1
+    identify_state.processed = 0
+    identify_state.initial_total = scan.total
+    identify_state.pending = nil
+    chat(207, ('Identifying %d Sortie earring(s), one at a time. Use //sec abort to stop.')
+        :format(scan.total))
+    identify_advance()
+end
+
 windower.register_event('addon command', function(...)
     local args = {...}
     local cmd = tostring(args[1] or 'help'):lower()
@@ -715,7 +928,27 @@ windower.register_event('addon command', function(...)
         return
     end
 
+    if cmd == 'identify' then
+        local subcommand = tostring(args[2] or ''):lower()
+        if subcommand == 'scan' then
+            identify_scan_only()
+        elseif subcommand == '' then
+            begin_identify()
+        else
+            chat(207, 'Usage: //sec identify [scan]')
+        end
+        return
+    end
+
     if cmd == 'abort' then
+        if identify_state.running then
+            identify_state.running = false
+            identify_state.pending = nil
+            identify_state.generation = identify_state.generation + 1
+            chat(167, ('Identification aborted after %d earring(s). Already appraised items remain appraised.')
+                :format(identify_state.processed))
+            return
+        end
         if state.running then
             state.running = false
             chat(167, 'Cleanup aborted by user. Already-completed moves are left in place.')
@@ -727,6 +960,13 @@ windower.register_event('addon command', function(...)
     end
 
     if cmd == 'status' then
+        if identify_state.running then
+            local pending = identify_state.pending
+            chat(207, ('Identifying %d/%d, %s')
+                :format(identify_state.processed, identify_state.initial_total,
+                    pending and ('waiting to verify '..pending.name) or 'scanning next item'))
+            return
+        end
         if not state.running then
             chat(207, 'Idle.')
         else
@@ -743,9 +983,9 @@ windower.register_event('addon command', function(...)
         return
     end
 
-    chat(207, 'Commands: //sec scan | //sec run | //sec status | //sec abort')
+    chat(207, 'Commands: //sec scan | //sec run | //sec identify [scan] | //sec status | //sec abort')
 end)
 
 windower.register_event('load', function()
-    chat(207, 'Loaded v1.1.0. Use //sec scan or //sec run.')
+    chat(207, 'Loaded v1.2.0. Use //sec scan, //sec run, or //sec identify.')
 end)
