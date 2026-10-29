@@ -1,0 +1,16 @@
+name: Lua syntax check
+
+on:
+  push:
+    branches: [main, feature/identify-sortie-earrings]
+  pull_request:
+
+jobs:
+  parse-lua:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: Check Lua syntax
+        run: luac5.1 -p SortieEarringCleanup.lua
