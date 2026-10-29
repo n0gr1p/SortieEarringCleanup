@@ -782,11 +782,12 @@ local identify_advance
 
 local function identify_schedule(delay)
     local generation = identify_state.generation
-    (function()
+    local callback = function()
         if identify_state.running and identify_state.generation == generation then
             identify_advance()
         end
-    end):schedule(delay)
+    end
+    callback:schedule(delay)
 end
 
 identify_advance = function()
