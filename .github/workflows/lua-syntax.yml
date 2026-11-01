@@ -16,3 +16,5 @@ jobs:
         run: luac5.1 -p SortieEarringCleanup.lua
       - name: Run Sortie earring identification regression
         run: lua5.1 tests/identify_scan.lua
+      - name: Test conditional Mog House preflight
+        run: lua5.1 tests/mog_house_preflight.lua

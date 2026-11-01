@@ -19,13 +19,15 @@
 --   * Within a tier, higher coherent Sortie augment roll wins.
 --   * Ties prefer a copy already in a Wardrobe.
 --   * Preflight occurs before any movement.
+--   * Inventory, Satchel/Sack/Case, and Wardrobes work outside a Mog House.
+--   * Retrievals from Safe/Storage/Locker/Safe 2 require Mog House access.
 --   * Every move is verified before proceeding.
 --   * Identify only uses known Sortie ??? Earrings in main Inventory.
 --   * Identification checks each consumption before proceeding; no cases are opened.
 
 _addon.name = 'SortieEarringCleanup'
 _addon.author = 'Inventory Gremlin'
-_addon.version = '1.2.2'
+_addon.version = '1.2.3'
 _addon.commands = {'sec', 'sortieearrings'}
 
 local extdata = require('extdata')
@@ -45,6 +47,10 @@ local wardrobe_ids = {
     [16] = true,  -- Mog Wardrobe 8
 }
 local wardrobe_order = {8, 10, 11, 12, 13, 14, 15, 16}
+
+-- Windower Resources bag access="Mog House"; all other scanned bags are portable.
+local mog_house_bag_order = {1, 2, 4, 9} -- Safe, Storage, Locker, Safe 2
+local mog_house_only_bags = {[1] = true, [2] = true, [4] = true, [9] = true}
 
 -- Physical bags that can contain these earrings.
 -- Temporary bag 3 is intentionally excluded.
@@ -115,6 +121,10 @@ end
 
 local function is_wardrobe(id)
     return wardrobe_ids[id] == true
+end
+
+local function requires_mog_house(id)
+    return mog_house_only_bags[id] == true
 end
 
 local function item_name(id)
@@ -415,8 +425,32 @@ end
 
 local function preflight(keepers, redundant)
     local info = windower.ffxi.get_info()
-    if not info or not info.mog_house then
-        return false, 'Run this inside a Mog House/Rent-a-Room.'
+    if not info then
+        return false, 'Cannot verify current location.'
+    end
+
+    -- Only block when a PLANNED retrieval needs a Mog House. Merely having
+    -- other earrings in Safe/Locker/Storage does not prohibit portable moves.
+    if not info.mog_house then
+        local needed = {}
+        for _, copy in ipairs(keepers) do
+            if not is_wardrobe(copy.bag) and requires_mog_house(copy.bag) then
+                needed[copy.bag] = true
+            end
+        end
+        for _, copy in ipairs(redundant) do
+            if copy.bag ~= 0 and requires_mog_house(copy.bag) then
+                needed[copy.bag] = true
+            end
+        end
+        local names = {}
+        for _, bag_id in ipairs(mog_house_bag_order) do
+            if needed[bag_id] then names[#names + 1] = bag_name(bag_id) end
+        end
+        if #names > 0 then
+            return false, ('Mog House/Rent-a-Room needed for planned retrieval(s) from %s; no items moved.')
+                :format(table.concat(names, ', ')), true
+        end
     end
 
     local keeper_moves = 0
@@ -487,6 +521,20 @@ local function stop_with_error(message)
     local player = windower.ffxi.get_player()
     echo(('Sortie earring cleanup STOPPED on %s: %s')
         :format(player and player.name or '?', message))
+end
+
+-- Recheck immediately before a restricted retrieval in case the character zoned
+-- after the preflight but before this queued operation.
+local function source_accessible_now(copy)
+    if requires_mog_house(copy.bag) then
+        local info = windower.ffxi.get_info()
+        if not info or not info.mog_house then
+            stop_with_error(('Cannot retrieve %s from %s outside a Mog House/Rent-a-Room.')
+                :format(copy.name, bag_name(copy.bag)))
+            return false
+        end
+    end
+    return true
 end
 
 local function finish()
@@ -562,6 +610,7 @@ local function process_keeper(op)
             return
         end
 
+        if not source_accessible_now(copy) then return end
         if not source_matches(copy) then
             stop_with_error(('Keeper source changed before move: %s {%s:%d}.')
                 :format(copy.name, bag_name(copy.bag), copy.slot))
@@ -637,6 +686,7 @@ local function process_redundant(op)
             return
         end
 
+        if not source_accessible_now(copy) then return end
         if not source_matches(copy) then
             stop_with_error(('Redundant source changed before move: %s {%s:%d}.')
                 :format(copy.name, bag_name(copy.bag), copy.slot))
@@ -714,9 +764,9 @@ local function begin_run()
 
     print_plan(keepers, redundant)
 
-    local ok, reason = preflight(keepers, redundant)
+    local ok, reason, house_warning = preflight(keepers, redundant)
     if not ok then
-        chat(167, 'Preflight FAILED: '..reason)
+        chat(167, (house_warning and 'WARNING: ' or 'Preflight FAILED: ')..reason)
         echo('Sortie earring cleanup aborted during preflight.')
         return
     end
@@ -771,11 +821,11 @@ local function scan_only()
 
     print_plan(keepers, redundant)
 
-    local ok, reason = preflight(keepers, redundant)
+    local ok, reason, house_warning = preflight(keepers, redundant)
     if ok then
         chat(207, 'SCAN ONLY: preflight would pass. Nothing moved.')
     else
-        chat(167, 'SCAN ONLY: preflight would fail: '..reason)
+        chat(167, (house_warning and 'SCAN ONLY WARNING: ' or 'SCAN ONLY: preflight would fail: ')..reason)
     end
 end
 
@@ -997,5 +1047,5 @@ windower.register_event('addon command', function(...)
 end)
 
 windower.register_event('load', function()
-    chat(207, 'Loaded v1.2.2. Use //sec scan, //sec run, or //sec identify.')
+    chat(207, 'Loaded v1.2.3. Use //sec scan, //sec run, or //sec identify.')
 end)
