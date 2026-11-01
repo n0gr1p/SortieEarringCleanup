@@ -34,6 +34,17 @@ windower = {
         get_item=function() error('No moves should occur before scheduled execution') end,
     },
 }
+-- Windower adds function:schedule(delay); plain Lua 5.1 does not.
+-- Stub scheduling without executing callbacks or inventory transfers.
+local schedules = 0
+debug.setmetatable(function() end, {
+    __index = {
+        schedule = function(fn, delay)
+            assert(type(fn) == 'function' and type(delay) == 'number')
+            schedules = schedules + 1
+        end,
+    },
+})
 dofile('SortieEarringCleanup.lua')
 local command = assert(handlers['addon command'])
 local function output() return table.concat(messages,'\n') end
@@ -64,4 +75,5 @@ reset()
 command('run')
 assert(output():find('Preflight passed.',1,true),output())
 assert(not output():find('WARNING:',1,true),output())
+assert(schedules == 1, 'Expected one portable cleanup to be scheduled')
 print('PASS: conditional Mog House cleanup preflight')
