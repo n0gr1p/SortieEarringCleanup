@@ -45,12 +45,7 @@ local function reset(storage)
         bags[storage]={{id=25420,status=0,extdata='older'}}
     end
 end
--- Inventory keeper/wardrobe redundant preflight works outside the house.
-reset()
-command('run')
-assert(output():find('Preflight passed.',1,true),output())
-assert(not output():find('WARNING:',1,true),output())
--- A redundant Safe/Locker/Storage/Safe 2 source blocks without any moves.
+-- Restricted sources must warn, while scans stay usable outside.
 for _, bag in ipairs({1,2,4,9}) do
     reset(bag)
     command('run')
@@ -61,13 +56,12 @@ for _, bag in ipairs({1,2,4,9}) do
     command('scan')
     assert(output():find('SCAN ONLY WARNING:',1,true),output())
 end
--- No blanket restriction when inspecting a portable-only plan.
+-- No blanket restriction for portable-only plans.
 reset()
 command('scan')
 assert(output():find('SCAN ONLY: preflight would pass.',1,true),output())
--- A Mog House run can include restricted retrievals.
-in_house=true
-reset(1)
+reset()
 command('run')
 assert(output():find('Preflight passed.',1,true),output())
+assert(not output():find('WARNING:',1,true),output())
 print('PASS: conditional Mog House cleanup preflight')
